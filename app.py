@@ -15,6 +15,7 @@ from requests.packages.urllib3.util.retry import Retry
 import time
 import google.generativeai as genai
 import json
+import re
 
 # Download required NLTK data
 nltk.download('punkt')
@@ -112,35 +113,68 @@ def analyze_sentiment(symbol):
         ticker = yf.Ticker(symbol)
         
         try:
-            news = ticker.news[:5] if hasattr(ticker, 'news') and ticker.news else []
-        except:
+            news = ticker.news[:25] if hasattr(ticker, 'news') and ticker.news else []
+        except Exception as e:
+            print(f"Error accessing news: {str(e)}")
             news = []
         
         if not news:
-            return "Neutral (No recent news available)"
+            return "Neutral (No recent news available)", []
         
+        news_with_sentiment = []
         sentiment_scores = []
+        
         for item in news:
             try:
-                analysis = TextBlob(item.get('title', ''))
-                sentiment_scores.append(analysis.sentiment.polarity)
-            except:
+                # Access the nested content structure
+                content = item.get('content', {})
+                canonical_url = content.get('canonicalUrl', '')
+                
+                # Extract text and URL from the content dictionary
+                title = content.get('title', '')
+                description = content.get('description', '')
+                summary = content.get('summary', '')
+                url = canonical_url.get('url', '')
+                
+                # Use title first, then description, then summary
+                text = title or description or summary
+                
+                # Clean HTML tags from text if present
+                if '<' in text and '>' in text:
+                    text = re.sub('<.*?>', ' ', text)
+                
+                if text:
+                    analysis = TextBlob(text)
+                    sentiment = analysis.sentiment.polarity
+                    
+                    # Add to our lists
+                    sentiment_scores.append(sentiment)
+                    news_with_sentiment.append({
+                        'title': title,
+                        'sentiment': sentiment,
+                        'url': url
+                    })
+            except Exception as e:
+                print(f"Error analyzing news item: {str(e)}")
                 continue
         
         if not sentiment_scores:
-            return "Neutral (Unable to analyze sentiment)"
+            return "Neutral (Unable to analyze sentiment)", []
         
         avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
         
+        # Determine overall sentiment
         if avg_sentiment > 0.2:
-            return "Positive"
+            overall_sentiment = "Positive"
         elif avg_sentiment < -0.2:
-            return "Negative"
+            overall_sentiment = "Negative"
         else:
-            return "Neutral"
+            overall_sentiment = "Neutral"
+            
+        return overall_sentiment, news_with_sentiment
     except Exception as e:
         print(f"Error analyzing sentiment for {symbol}: {str(e)}")
-        return "Neutral (Error in analysis)"
+        return "Neutral (Error in analysis)", []
 
 def create_stock_graph(symbol, period='1y'):
     """Create a stock price graph"""
@@ -237,6 +271,58 @@ def process_query(query):
         print(f"Error processing query: {str(e)}")
         return 'unknown', ''
 
+def create_news_widget(news_with_sentiment):
+    """Create a widget displaying positive and negative news"""
+    if not news_with_sentiment:
+        return html.Div("No news available for this stock")
+    
+    # Sort news by sentiment
+    sorted_news = sorted(news_with_sentiment, key=lambda x: x['sentiment'], reverse=True)
+    
+    # Get top 3 positive and negative news
+    positive_news = [n for n in sorted_news if n['sentiment'] > 0][:3]
+    negative_news = [n for n in sorted_news if n['sentiment'] < 0][:3]
+    
+    # Create tables for positive and negative news
+    return html.Div([
+        html.H4("Latest News Sentiment", className="mt-3 mb-4"),
+        dbc.Row([
+            # Positive news
+            dbc.Col([
+                html.H5("Positive News", className="text-success border-bottom pb-2"),
+                html.Div([
+                    html.Div([
+                        html.A(
+                            news['title'] or "No title available", 
+                            href=news['url'],
+                            target="_blank",
+                            className="text-decoration-none"
+                        ),
+                        html.Small(f" (Sentiment: {news['sentiment']:.2f})", className="text-muted")
+                    ], className="mb-2 p-2 border-bottom") 
+                    for news in positive_news
+                ]) if positive_news else html.P("No positive news found")
+            ], width=6),
+            
+            # Negative news
+            dbc.Col([
+                html.H5("Negative News", className="text-danger border-bottom pb-2"),
+                html.Div([
+                    html.Div([
+                        html.A(
+                            news['title'] or "No title available", 
+                            href=news['url'],
+                            target="_blank",
+                            className="text-decoration-none"
+                        ),
+                        html.Small(f" (Sentiment: {news['sentiment']:.2f})", className="text-muted")
+                    ], className="mb-2 p-2 border-bottom") 
+                    for news in negative_news
+                ]) if negative_news else html.P("No negative news found")
+            ], width=6)
+        ])
+    ], className="mt-4 p-3 border rounded")
+
 # Initialize the Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
@@ -263,13 +349,20 @@ app.layout = html.Div(className="vh-100 d-flex justify-content-center align-item
                         dbc.Row([
                             # Stock graph
                             dbc.Col([
-                                dcc.Graph(id="stock-graph", style={"height": "75vh"})
+                                dcc.Graph(id="stock-graph", style={"height": "40vh"})
                             ], width=8),
                             
                             # Company info
                             dbc.Col([
                                 html.Div(id="company-info", className="h-100")
                             ], width=4)
+                        ]),
+                        
+                        # News widget
+                        dbc.Row([
+                            dbc.Col([
+                                html.Div(id="news-widget", className="mt-4")
+                            ])
                         ])
                     ])
                 ])
@@ -300,14 +393,15 @@ app.layout = html.Div(className="vh-100 d-flex justify-content-center align-item
 @app.callback(
     [Output("chat-output", "children"),
      Output("stock-graph", "figure"),
-     Output("company-info", "children")],
+     Output("company-info", "children"),
+     Output("news-widget", "children")],
     [Input("send-button", "n_clicks")],
     [State("chat-input", "value")],
     prevent_initial_call=True
 )
 def update_output(n_clicks, query):
     if not query:
-        return "Please enter a query.", {}, ""
+        return "Please enter a query.", {}, "", ""
     
     query_type, company = process_query(query)
     print(query_type, company)
@@ -318,8 +412,9 @@ def update_output(n_clicks, query):
         
         # Get company info
         info = get_company_info(company)
-        sentiment = analyze_sentiment(company)
+        sentiment, news_with_sentiment = analyze_sentiment(company)
         
+        # Create company info div
         info_div = html.Div([
             html.H3(info['name'], className="mb-4"),
             html.Div([
@@ -333,7 +428,10 @@ def update_output(n_clicks, query):
             ], className="p-3")
         ], className="h-100 overflow-auto")
         
-        return f"Here's the analysis for {info['name']}", fig, info_div
+        # Create news widget
+        news_widget = create_news_widget(news_with_sentiment)
+        
+        return f"Here's the analysis for {info['name']}", fig, info_div, news_widget
     
     elif query_type == 'competitors':
         competitors = COMPANY_COMPETITORS.get(company, [])
@@ -347,11 +445,15 @@ def update_output(n_clicks, query):
                 html.Ul([html.Li(comp) for comp in competitors], className="mt-3")
             ], className="p-3")
             
-            return f"Comparing {company} with its competitors", fig, info_div
+            # Get sentiment for the main company
+            sentiment, news_with_sentiment = analyze_sentiment(company)
+            news_widget = create_news_widget(news_with_sentiment)
+            
+            return f"Comparing {company} with its competitors", fig, info_div, news_widget
         else:
-            return "Sorry, I don't have competitor information for this company.", {}, ""
+            return "Sorry, I don't have competitor information for this company.", {}, "", ""
     
-    return "I'm not sure how to help with that query.", {}, ""
+    return "I'm not sure how to help with that query.", {}, "", ""
 
 # Example usage
 if __name__ == '__main__':
