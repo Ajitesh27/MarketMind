@@ -1,0 +1,11 @@
+yfinance==0.2.54
+pandas==2.1.0
+plotly==5.18.0
+dash==2.14.0
+dash-bootstrap-components==1.5.0
+nltk==3.8.1
+transformers==4.36.0
+textblob==0.17.1
+newsapi-python==0.2.7
+python-dotenv==1.0.0
+google-generativeai==0.3.2
