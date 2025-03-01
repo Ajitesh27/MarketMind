@@ -64,7 +64,7 @@ def get_stock_data(symbol, period='1mo'):
         return pd.DataFrame()
 
 def get_company_info(symbol):
-    """Get company information including major holders"""
+    """Get company information including market mood"""
     try:
         time.sleep(2)
         ticker = yf.Ticker(symbol)
@@ -74,8 +74,7 @@ def get_company_info(symbol):
             'name': symbol,
             'sector': 'Technology',
             'industry': 'Technology',
-            'major_holders': pd.DataFrame([['Institutional Holders', 'Data Unavailable'],
-                                        ['Individual Holders', 'Data Unavailable']])
+            'market_mood': {'buy': 0, 'hold': 0, 'sell': 0}
         }
         
         try:
@@ -90,11 +89,24 @@ def get_company_info(symbol):
             print(f"Error fetching info for {symbol}: {str(e)}")
         
         try:
-            holders = ticker.major_holders
-            if not holders.empty:
-                info['major_holders'] = holders
+            # Get recommendations data
+            recommendations = ticker.recommendations
+            if not recommendations.empty:
+                # Get the most recent recommendation (first row)
+                recent_rec = recommendations.iloc[0]
+                
+                # Extract buy, hold, sell counts
+                buy_count = int(recent_rec.get('strongBuy', 0)) + int(recent_rec.get('buy', 0))
+                hold_count = int(recent_rec.get('hold', 0))
+                sell_count = int(recent_rec.get('sell', 0)) + int(recent_rec.get('strongSell', 0))
+                
+                info['market_mood'] = {
+                    'buy': buy_count,
+                    'hold': hold_count,
+                    'sell': sell_count
+                }
         except Exception as e:
-            print(f"Error fetching holders for {symbol}: {str(e)}")
+            print(f"Error fetching recommendations for {symbol}: {str(e)}")
         
         return info
     except Exception as e:
@@ -103,8 +115,7 @@ def get_company_info(symbol):
             'name': symbol,
             'sector': 'Technology',
             'industry': 'Technology',
-            'major_holders': pd.DataFrame([['Institutional Holders', 'Data Unavailable'],
-                                        ['Individual Holders', 'Data Unavailable']])
+            'market_mood': {'buy': 0, 'hold': 0, 'sell': 0}
         }
 
 def analyze_sentiment(symbol):
@@ -262,6 +273,9 @@ def process_query(query):
         
         Example response for 'How is Nvidia doing?':
         {{"company": "NVDA", "intent": "performance"}}
+        
+        Example response for 'Compare Apple with its competitors':
+        {{"company": "AAPL", "intent": "competitors"}}
         """
         
         response = gemini_model.generate_content(prompt)
@@ -323,6 +337,66 @@ def create_news_widget(news_with_sentiment):
         ])
     ], className="mt-4 p-3 border rounded")
 
+def create_market_mood_chart(market_mood):
+    """Create a pie chart showing market mood based on analyst recommendations"""
+    # Prepare data for pie chart
+    labels = ['Buy', 'Hold', 'Sell']
+    values = [market_mood['buy'], market_mood['hold'], market_mood['sell']]
+    
+    # Using vibrant colors for maximum visibility
+    colors = ['#00cc00', '#ffcc00', '#ff0000']  # Green, Yellow, Red
+    
+    # Calculate total recommendations for percentage calculation
+    total_recs = sum(values)
+    
+    if total_recs == 0:
+        # No data available
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No recommendation data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False
+        )
+        fig.update_layout(
+            title="Market Mood",
+            template="plotly_white",
+            height=350  # Increased height
+        )
+        return fig
+    
+    # Create hover text with percentages
+    hover_text = [
+        f"Buy: {market_mood['buy']} ({market_mood['buy']/total_recs*100:.1f}%)",
+        f"Hold: {market_mood['hold']} ({market_mood['hold']/total_recs*100:.1f}%)",
+        f"Sell: {market_mood['sell']} ({market_mood['sell']/total_recs*100:.1f}%)"
+    ]
+    
+    # Create pie chart
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        hole=.4,
+        marker=dict(colors=colors),
+        textinfo='percent+label',  # Added labels to the chart
+        hoverinfo='text',
+        hovertext=hover_text,
+        textfont=dict(size=14)  # Larger text
+    )])
+    
+    # Update layout
+    fig.update_layout(
+        title="Market Mood (Analyst Recommendations)",
+        title_font=dict(size=16),
+        template="plotly_white",
+        height=350,  # Increased height
+        margin=dict(t=50, b=20, l=20, r=20)  # Adjusted margins
+    )
+    
+    return fig
+
 # Initialize the Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
@@ -349,12 +423,20 @@ app.layout = html.Div(className="vh-100 d-flex justify-content-center align-item
                         dbc.Row([
                             # Stock graph
                             dbc.Col([
-                                dcc.Graph(id="stock-graph", style={"height": "40vh"})
+                                html.Div(id="stock-graph-container", className="h-100", children=[
+                                    html.Div(
+                                        "Enter a stock query to display data",
+                                        className="h-100 d-flex justify-content-center align-items-center text-muted"
+                                    )
+                                ], style={"height": "40vh"})
                             ], width=8),
                             
-                            # Company info
+                            # Company info and market mood
                             dbc.Col([
-                                html.Div(id="company-info", className="h-100")
+                                html.Div(id="company-info", className="mb-3"),
+                                html.Div(id="market-mood-container", className="h-100", children=[
+                                    # Initially empty
+                                ])
                             ], width=4)
                         ]),
                         
@@ -373,9 +455,19 @@ app.layout = html.Div(className="vh-100 d-flex justify-content-center align-item
                 dbc.Card(className="h-100 shadow", children=[
                     dbc.CardHeader("AI Stock Assistant"),
                     dbc.CardBody([
-                        html.Div(id="chat-output", 
-                                className="chat-response border rounded mb-3", 
-                                style={"height": "65vh", "overflow-y": "auto", "padding": "15px"}),
+                        html.Div(
+                            id="chat-output", 
+                            className="chat-response border rounded mb-3", 
+                            style={"height": "65vh", "overflow-y": "auto", "padding": "15px"},
+                            children=[
+                                html.P("Welcome to the Stock Dashboard! Ask me about any stock, for example:"),
+                                html.Ul([
+                                    html.Li("How is Apple doing?"),
+                                    html.Li("Show me Tesla stock performance"),
+                                    html.Li("What's the market sentiment for Microsoft?")
+                                ])
+                            ]
+                        ),
                         dbc.Input(
                             id="chat-input",
                             type="text",
@@ -392,8 +484,9 @@ app.layout = html.Div(className="vh-100 d-flex justify-content-center align-item
 
 @app.callback(
     [Output("chat-output", "children"),
-     Output("stock-graph", "figure"),
+     Output("stock-graph-container", "children"),
      Output("company-info", "children"),
+     Output("market-mood-container", "children"),
      Output("news-widget", "children")],
     [Input("send-button", "n_clicks")],
     [State("chat-input", "value")],
@@ -401,59 +494,117 @@ app.layout = html.Div(className="vh-100 d-flex justify-content-center align-item
 )
 def update_output(n_clicks, query):
     if not query:
-        return "Please enter a query.", {}, "", ""
+        return (
+            html.P("Please enter a query about a stock."),
+            html.Div(
+                "Enter a stock query to display data",
+                className="h-100 d-flex justify-content-center align-items-center text-muted"
+            ),
+            html.Div(""),
+            html.Div(""),
+            html.Div("")
+        )
     
-    query_type, company = process_query(query)
-    print(query_type, company)
-    
-    if query_type == 'performance':
-        # Get stock performance
-        fig = create_stock_graph(company)
+    try:
+        # Process the query to extract intent and company
+        intent, symbol = process_query(query)
         
+        if not symbol:
+            return (
+                html.P(f"I couldn't identify a stock symbol in your query. Please try again with a specific company."),
+                html.Div(
+                    "Enter a stock query to display data",
+                    className="h-100 d-flex justify-content-center align-items-center text-muted"
+                ),
+                html.Div(""),
+                html.Div(""),
+                html.Div("")
+            )
+        
+        # Handle competitors intent differently
+        if intent == "competitors":
+            # Get competitors for the symbol
+            competitors = COMPANY_COMPETITORS.get(symbol, [])
+            
+            if not competitors:
+                # If no competitors are defined, return a message
+                return (
+                    html.P(f"I don't have competitor information for {symbol}. Try another company or a different query."),
+                    html.Div(
+                        f"No competitor data available for {symbol}",
+                        className="h-100 d-flex justify-content-center align-items-center text-muted"
+                    ),
+                    html.Div(""),
+                    html.Div(""),
+                    html.Div("")
+                )
+            
+            # Create comparison graph with the symbol and its competitors
+            comparison_fig = create_comparison_graph([symbol] + competitors)
+            
+            # Create a response message
+            response = html.Div([
+                html.P(f"Comparing {symbol} with its competitors:"),
+                html.Ul([html.Li(comp) for comp in competitors])
+            ])
+            
+            # Return only the comparison graph, leaving other components empty
+            return (
+                response,
+                dcc.Graph(figure=comparison_fig, style={"height": "70vh"}),  # Larger graph for comparison
+                html.Div(""),  # Empty company info
+                html.Div(""),  # Empty market mood
+                html.Div("")   # Empty news widget
+            )
+        
+        # Regular performance intent flow
         # Get company info
-        info = get_company_info(company)
-        sentiment, news_with_sentiment = analyze_sentiment(company)
+        company_info = get_company_info(symbol)
         
-        # Create company info div
-        info_div = html.Div([
-            html.H3(info['name'], className="mb-4"),
-            html.Div([
-                html.H5("Company Information", className="border-bottom pb-2"),
-                html.P(f"Sector: {info['sector']}", className="mb-1"),
-                html.P(f"Industry: {info['industry']}", className="mb-1"),
-                html.P(f"Market Sentiment: {sentiment}", className="mb-3"),
-                
-                html.H5("Major Holders", className="border-bottom pb-2 mt-4"),
-                dbc.Table.from_dataframe(info['major_holders'], striped=True, bordered=True, hover=True, size="sm")
-            ], className="p-3")
-        ], className="h-100 overflow-auto")
+        # Create stock graph
+        stock_fig = create_stock_graph(symbol)
+        
+        # Create market mood chart
+        market_mood_chart = create_market_mood_chart(company_info['market_mood'])
+        
+        # Get news sentiment
+        sentiment_label, news_items = analyze_sentiment(symbol)
         
         # Create news widget
-        news_widget = create_news_widget(news_with_sentiment)
+        news_widget = create_news_widget(news_items)
         
-        return f"Here's the analysis for {info['name']}", fig, info_div, news_widget
-    
-    elif query_type == 'competitors':
-        competitors = COMPANY_COMPETITORS.get(company, [])
-        if competitors:
-            fig = create_comparison_graph([company] + competitors)
-            
-            # Create a simple info panel for competitors
-            info_div = html.Div([
-                html.H3(f"{company} Comparison", className="mb-4"),
-                html.H5("Comparing With:", className="border-bottom pb-2"),
-                html.Ul([html.Li(comp) for comp in competitors], className="mt-3")
-            ], className="p-3")
-            
-            # Get sentiment for the main company
-            sentiment, news_with_sentiment = analyze_sentiment(company)
-            news_widget = create_news_widget(news_with_sentiment)
-            
-            return f"Comparing {company} with its competitors", fig, info_div, news_widget
-        else:
-            return "Sorry, I don't have competitor information for this company.", {}, "", ""
-    
-    return "I'm not sure how to help with that query.", {}, "", ""
+        # Create company info component
+        company_info_component = html.Div([
+            html.H4(company_info['name']),
+            html.P(f"Sector: {company_info['sector']}"),
+            html.P(f"Industry: {company_info['industry']}"),
+            html.P(f"Sentiment: {sentiment_label}", className=f"{'text-success' if 'Positive' in sentiment_label else 'text-danger' if 'Negative' in sentiment_label else 'text-warning'}")
+        ])
+        
+        # Create response message
+        response = html.Div([
+            html.P(f"Analyzing {company_info['name']} ({symbol})"),
+            html.P(f"I've gathered information about {company_info['name']} including its stock performance, market mood based on analyst recommendations, and recent news sentiment.")
+        ])
+        
+        # Return actual graph and chart components
+        stock_graph_component = dcc.Graph(figure=stock_fig, style={"height": "40vh"})
+        market_mood_component = dcc.Graph(figure=market_mood_chart, style={"height": "35vh"})
+        
+        return response, stock_graph_component, company_info_component, market_mood_component, news_widget
+        
+    except Exception as e:
+        print(f"Error processing query: {str(e)}")
+        return (
+            html.P(f"Error: {str(e)}"),
+            html.Div(
+                f"Error retrieving stock data: {str(e)}",
+                className="h-100 d-flex justify-content-center align-items-center text-danger"
+            ),
+            html.Div("Error retrieving company information"),
+            html.Div(""),
+            html.Div("Error retrieving news")
+        )
 
 # Example usage
 if __name__ == '__main__':
