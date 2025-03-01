@@ -248,21 +248,50 @@ COMPANY_COMPETITORS = {
 }
 
 # Layout
-app.layout = html.Div([
-    dbc.Container([
-        html.H1("Dashboard", className="my-4"),
-        dbc.Card([
-            dbc.CardBody([
-                dbc.Input(
-                    id="chat-input",
-                    type="text",
-                    placeholder="Ask about a company (e.g., 'How is Nvidia doing?')",
-                    className="mb-3"
-                ),
-                dbc.Button("Send", id="send-button", color="primary", className="mb-3"),
-                html.Div(id="chat-output"),
-                dcc.Graph(id="stock-graph"),
-                html.Div(id="company-info")
+app.layout = html.Div(className="vh-100 d-flex justify-content-center align-items-center", style={"background-color": "#f8f9fa"}, children=[
+    # Main container - 80% of screen width
+    dbc.Container(className="h-100 py-4", style={"width": "80%", "max-width": "80%"}, children=[
+        html.H1("Stock Dashboard", className="mb-4 text-center"),
+        
+        # Main row - side by side layout
+        dbc.Row(className="h-90", children=[
+            # Left side - Dashboard (70% of the container)
+            dbc.Col(width=8, className="h-100", children=[
+                dbc.Card(className="h-100 shadow", children=[
+                    dbc.CardBody([
+                        # Stock graph and company info side by side
+                        dbc.Row([
+                            # Stock graph
+                            dbc.Col([
+                                dcc.Graph(id="stock-graph", style={"height": "75vh"})
+                            ], width=8),
+                            
+                            # Company info
+                            dbc.Col([
+                                html.Div(id="company-info", className="h-100")
+                            ], width=4)
+                        ])
+                    ])
+                ])
+            ]),
+            
+            # Right side - Chatbot (30% of the container)
+            dbc.Col(width=4, className="h-100", children=[
+                dbc.Card(className="h-100 shadow", children=[
+                    dbc.CardHeader("AI Stock Assistant"),
+                    dbc.CardBody([
+                        html.Div(id="chat-output", 
+                                className="chat-response border rounded mb-3", 
+                                style={"height": "65vh", "overflow-y": "auto", "padding": "15px"}),
+                        dbc.Input(
+                            id="chat-input",
+                            type="text",
+                            placeholder="Ask about a company (e.g., 'How is Nvidia doing?')",
+                            className="mb-3"
+                        ),
+                        dbc.Button("Send", id="send-button", color="primary", className="w-100")
+                    ])
+                ])
             ])
         ])
     ])
@@ -280,9 +309,8 @@ def update_output(n_clicks, query):
     if not query:
         return "Please enter a query.", {}, ""
     
-    #query_type, company = process_query(query)
-    #print(query_type, company)
-    query_type, company = 'performance', 'NVDA'
+    query_type, company = process_query(query)
+    print(query_type, company)
     
     if query_type == 'performance':
         # Get stock performance
@@ -293,13 +321,17 @@ def update_output(n_clicks, query):
         sentiment = analyze_sentiment(company)
         
         info_div = html.Div([
-            html.H4(info['name']),
-            html.P(f"Sector: {info['sector']}"),
-            html.P(f"Industry: {info['industry']}"),
-            html.P(f"Market Sentiment: {sentiment}"),
-            html.H5("Major Holders:"),
-            dbc.Table.from_dataframe(info['major_holders'])
-        ])
+            html.H3(info['name'], className="mb-4"),
+            html.Div([
+                html.H5("Company Information", className="border-bottom pb-2"),
+                html.P(f"Sector: {info['sector']}", className="mb-1"),
+                html.P(f"Industry: {info['industry']}", className="mb-1"),
+                html.P(f"Market Sentiment: {sentiment}", className="mb-3"),
+                
+                html.H5("Major Holders", className="border-bottom pb-2 mt-4"),
+                dbc.Table.from_dataframe(info['major_holders'], striped=True, bordered=True, hover=True, size="sm")
+            ], className="p-3")
+        ], className="h-100 overflow-auto")
         
         return f"Here's the analysis for {info['name']}", fig, info_div
     
@@ -307,14 +339,19 @@ def update_output(n_clicks, query):
         competitors = COMPANY_COMPETITORS.get(company, [])
         if competitors:
             fig = create_comparison_graph([company] + competitors)
-            return f"Comparing {company} with its competitors", fig, ""
+            
+            # Create a simple info panel for competitors
+            info_div = html.Div([
+                html.H3(f"{company} Comparison", className="mb-4"),
+                html.H5("Comparing With:", className="border-bottom pb-2"),
+                html.Ul([html.Li(comp) for comp in competitors], className="mt-3")
+            ], className="p-3")
+            
+            return f"Comparing {company} with its competitors", fig, info_div
         else:
             return "Sorry, I don't have competitor information for this company.", {}, ""
     
     return "I'm not sure how to help with that query.", {}, ""
-
-
-
 
 # Example usage
 if __name__ == '__main__':
